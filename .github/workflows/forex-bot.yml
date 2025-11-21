@@ -1,18 +1,110 @@
-name: Forex Bot
+name: Forex News Bot
 
 on:
+  schedule:
+    - cron: '*/10 * * * *'  # هر ۱۰ دقیقه
   workflow_dispatch:
 
 jobs:
-  test-bot:
+  check-news:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Send Telegram Message
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
-          curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
-          -d chat_id="$CHAT_ID" \
-          -d text="✅ تست ساده ربات" \
-          -d parse_mode="HTML"
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        pip install requests beautifulsoup4 pytz
+        
+    - name: Create and run Forex bot
+      env:
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        CHAT_ID: ${{ secrets.CHAT_ID }}
+      run: |
+        # ایجاد فایل پایتون
+        cat > bot.py << 'EOF'
+import requests
+import os
+from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
+
+BOT_TOKEN = os.environ['BOT_TOKEN']
+CHAT_ID = os.environ['CHAT_ID']
+
+def send_message(text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    try:
+        response = requests.post(url, json=data, timeout=10)
+        print("✅ پیام ارسال شد")
+        return True
+    except Exception as e:
+        print(f"❌ خطا: {e}")
+        return False
+
+def get_news():
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get("https://www.forexfactory.com/", headers=headers, timeout=10)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # پیدا کردن رویدادهای امروز
+        events = []
+        rows = soup.find_all('tr', class_='calendar__row')
+        
+        for row in rows:
+            try:
+                time_cell = row.find('td', class_='calendar__time')
+                if not time_cell:
+                    continue
+                
+                time_text = time_cell.get_text(strip=True)
+                if not time_text or time_text in ['All Day', 'Tentative', 'Later']:
+                    continue
+                
+                currency_cell = row.find('td', class_='calendar__currency')
+                event_cell = row.find('td', class_='calendar__event')
+                
+                if currency_cell and event_cell:
+                    currency = currency_cell.get_text(strip=True)
+                    event_name = event_cell.get_text(strip=True)
+                    
+                    # اخبار مهم
+                    important = ['NFP', 'CPI', 'Interest Rate', 'GDP', 'Employment', 'FOMC']
+                    if any(word in event_name for word in important):
+                        events.append(f"💰 {currency} - {event_name} ⏰ {time_text}")
+                        
+            except:
+                continue
+        
+        return events
+        
+    except Exception as e:
+        print(f"خطا در دریافت اخبار: {e}")
+        return []
+
+# اجرای اصلی
+print("🤖 شروع بررسی اخبار...")
+news_events = get_news()
+
+if news_events:
+    message = "📊 اخبار مهم امروز:\n\n" + "\n".join(news_events[:5])  # حداکثر ۵ خبر
+    send_message(message)
+    print("📨 اخبار ارسال شد")
+else:
+    send_message("📊 امروز خبر مهمی نیست")
+    print("✅ بررسی کامل شد")
+EOF
+
+        # اجرای ربات
+        python bot.py
