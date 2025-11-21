@@ -1,43 +1,18 @@
-name: Forex News Bot
+name: Forex Bot
 
 on:
-  schedule:
-    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 jobs:
-  check-news:
+  test-bot:
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-      
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
-        
-    - name: Install dependencies
-      run: |
-        pip install requests beautifulsoup4
-        
-    - name: Send test message
-      env:
-        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        CHAT_ID: ${{ secrets.CHAT_ID }}
-      run: |
-        python -c "
-import requests
-import os
-BOT_TOKEN = os.environ['BOT_TOKEN']
-CHAT_ID = os.environ['CHAT_ID']
-url = f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage'
-data = {
-    'chat_id': CHAT_ID,
-    'text': '✅ ربات فعال شد!\\nGitHub Actions کار می‌کند.',
-    'parse_mode': 'HTML'
-}
-response = requests.post(url, json=data)
-print('پیام ارسال شد:', response.status_code)
-"
+      - name: Send Telegram Message
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+          -d chat_id="$CHAT_ID" \
+          -d text="✅ تست ساده ربات" \
+          -d parse_mode="HTML"
