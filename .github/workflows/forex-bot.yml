@@ -1,0 +1,205 @@
+name: Forex News Bot
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'  # هر ۱۰ دقیقه اجرا شود
+  workflow_dispatch:  # اجرای دستی
+
+jobs:
+  check-news:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests beautifulsoup4 pytz
+        
+    - name: Create bot script
+      run: |
+        cat > forex_bot.py << 'EOF'
+import requests
+import os
+from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
+import pytz
+
+BOT_TOKEN = os.environ['BOT_TOKEN']
+CHAT_ID = os.environ['CHAT_ID']
+
+class ForexBot:
+    def __init__(self):
+        self.token = BOT_TOKEN
+        self.chat_id = CHAT_ID
+        self.processed_events = set()
+        
+    def send_message(self, text):
+        """ارسال پیام به تلگرام"""
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        data = {
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "HTML"
+        }
+        try:
+            response = requests.post(url, json=data, timeout=10)
+            print(f"✅ پیام ارسال شد: {text}")
+            return response.json()
+        except Exception as e:
+            print(f"❌ خطا در ارسال پیام: {e}")
+            return None
+    
+    def get_forex_events(self):
+        """دریافت رویدادها از Forex Factory"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            response = requests.get("https://www.forexfactory.com/", headers=headers, timeout=10)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            events = []
+            
+            # پیدا کردن جدول اخبار
+            rows = soup.find_all('tr', class_='calendar__row')
+            
+            for row in rows:
+                try:
+                    # بررسی زمان رویداد
+                    time_cell = row.find('td', class_='calendar__time')
+                    if not time_cell:
+                        continue
+                    
+                    time_text = time_cell.get_text(strip=True)
+                    if not time_text or time_text in ['All Day', 'Tentative', 'Later']:
+                        continue
+                    
+                    # دریافت جزئیات رویداد
+                    currency_cell = row.find('td', class_='calendar__currency')
+                    event_cell = row.find('td', class_='calendar__event')
+                    
+                    if currency_cell and event_cell:
+                        currency = currency_cell.get_text(strip=True)
+                        event_name = event_cell.get_text(strip=True)
+                        
+                        # فقط اخبار مهم
+                        important_events = ['NFP', 'CPI', 'Interest Rate', 'GDP', 'Employment', 'FOMC', 'PMI']
+                        if any(word in event_name for word in important_events):
+                            event_time = self.parse_time(time_text)
+                            if event_time:
+                                event_id = f"{event_time.strftime('%H:%M')}_{currency}_{event_name}"
+                                
+                                events.append({
+                                    'id': event_id,
+                                    'time': event_time,
+                                    'currency': currency,
+                                    'event': event_name,
+                                    'time_text': time_text
+                                })
+                                
+                except Exception as e:
+                    continue
+                    
+            return events
+            
+        except Exception as e:
+            print(f"❌ خطا در دریافت اخبار: {e}")
+            return []
+    
+    def parse_time(self, time_str):
+        """تبدیل زمان به فرمت datetime"""
+        try:
+            now = datetime.now()
+            time_str_clean = time_str.replace('am', '').replace('pm', '').strip()
+            
+            if ':' in time_str_clean:
+                hour, minute = map(int, time_str_clean.split(':'))
+            else:
+                hour = int(time_str_clean)
+                minute = 0
+            
+            # تبدیل به 24-hour format
+            if 'pm' in time_str.lower() and hour < 12:
+                hour += 12
+            elif 'am' in time_str.lower() and hour == 12:
+                hour = 0
+            
+            event_time = datetime.now().replace(
+                hour=hour, minute=minute, second=0, microsecond=0
+            )
+            
+            # اگر زمان گذشته است، برای فردا در نظر بگیرید
+            if event_time < now:
+                event_time += timedelta(days=1)
+            
+            return event_time
+            
+        except Exception as e:
+            print(f"❌ خطا در تبدیل زمان: {e}")
+            return None
+    
+    def check_news(self):
+        """بررسی و ارسال هشدارها"""
+        print(f"🔍 بررسی اخبار در {datetime.now().strftime('%H:%M:%S')}")
+        
+        events = self.get_forex_events()
+        now = datetime.now()
+        
+        for event in events:
+            event_id = event['id']
+            
+            # اگر رویداد قبلاً پردازش نشده باشد
+            if event_id not in self.processed_events:
+                # محاسبه زمان هشدار (۱۰ دقیقه قبل)
+                alert_time = event['time'] - timedelta(minutes=10)
+                
+                # اگر زمان فعلی نزدیک به زمان هشدار است
+                time_diff = (alert_time - now).total_seconds()
+                if -60 <= time_diff <= 60:  # در ۱ دقیقه گذشته یا آینده
+                    message = self.format_message(event)
+                    self.send_message(message)
+                    self.processed_events.add(event_id)
+                    print(f"⚠️ هشدار ارسال شد برای: {event['event']}")
+                else:
+                    print(f"⏰ رویداد پیدا شد: {event['event']} در {event['time_text']}")
+    
+    def format_message(self, event):
+        """فرمت‌دهی پیام برای تلگرام"""
+        message = f"""
+📊 <b>Forex Factory Alert</b>
+
+💰 <b>Currency:</b> {event['currency']}
+📅 <b>Event:</b> {event['event']}
+⏰ <b>Time:</b> {event['time_text']} (EST)
+🔄 <b>In:</b> 10 minutes
+
+⚠️ <b>Get ready for market movement!</b>
+        """
+        return message.strip()
+
+# اجرای ربات
+if __name__ == "__main__":
+    bot = ForexBot()
+    print("🤖 ربات Forex Factory شروع به کار کرد...")
+    bot.check_news()
+    print("✅ بررسی اخبار کامل شد")
+EOF
+        
+    - name: Run Forex Bot
+      env:
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        CHAT_ID: ${{ secrets.CHAT_ID }}
+      run: python forex_bot.py
+      
+    - name: Show log
+      run: |
+        echo "✅ Workflow completed successfully"
+        date
